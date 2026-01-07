@@ -138,6 +138,9 @@ void Im3dImpl::Render(IGfxCommandList* pCommandList)
 
         vertexBufferOffset += sizeof(Im3d::VertexData) * drawList.m_vertexCount;
     }
+    
+    void DrawTextDrawListsImGui(const Im3d::TextDrawList _textDrawLists[], Im3d::U32 _count);
+    DrawTextDrawListsImGui(Im3d::GetTextDrawLists(), Im3d::GetTextDrawListCount());
 }
 
 uint32_t Im3dImpl::GetVertexCount() const
@@ -151,4 +154,96 @@ uint32_t Im3dImpl::GetVertexCount() const
     }
 
     return vertexCount;
+}
+
+void DrawTextDrawListsImGui(const Im3d::TextDrawList _textDrawLists[], Im3d::U32 _count)
+{
+    using namespace Im3d;
+    
+    Camera* camera = Engine::GetInstance()->GetWorld()->GetCamera();
+    const float4x4& viewProj = camera->GetNonJitterViewProjectionMatrix();
+    
+    // Invisible ImGui window which covers the screen.
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32_BLACK_TRANS);
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y));
+    ImGui::Begin("Invisible", nullptr, 0
+                 | ImGuiWindowFlags_NoTitleBar
+                 | ImGuiWindowFlags_NoResize
+                 | ImGuiWindowFlags_NoScrollbar
+                 | ImGuiWindowFlags_NoInputs
+                 | ImGuiWindowFlags_NoSavedSettings
+                 | ImGuiWindowFlags_NoFocusOnAppearing
+                 | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    
+    ImDrawList* imDrawList = ImGui::GetWindowDrawList();
+    
+    for (U32 i = 0; i < _count; ++i)
+    {
+        const TextDrawList& textDrawList = Im3d::GetTextDrawLists()[i];
+        
+        if (textDrawList.m_layerId == Im3d::MakeId("NamedLayer"))
+        {
+            // The application may group primitives into layers, which can be used to change the draw state (e.g. enable depth testing, use a different shader)
+        }
+        
+        for (U32 j = 0; j < textDrawList.m_textDataCount; ++j)
+        {
+            const Im3d::TextData& textData = textDrawList.m_textData[j];
+            if (textData.m_positionSize.w == 0.0f || textData.m_color.getA() == 0.0f)
+            {
+                continue;
+            }
+            
+            // Project world -> screen space.
+            float4 clip = mul(viewProj, Vec4(textData.m_positionSize.x, textData.m_positionSize.y, textData.m_positionSize.z, 1.0f));
+            float2 screen = Vec2(clip.x / clip.w, clip.y / clip.w);
+            
+            // Cull text which falls offscreen. Note that this doesn't take into account text size but works well enough in practice.
+            if (clip.w < 0.0f || screen.x >= 1.0f || screen.y >= 1.0f)
+            {
+                continue;
+            }
+            
+            // Pixel coordinates for the ImGuiWindow ImGui.
+            screen = screen * 0.5f + 0.5f;
+            screen.y = 1.0f - screen.y; // screen space origin is reversed by the projection.
+            screen = screen * float2(ImGui::GetWindowSize().x, ImGui::GetWindowSize().y);
+            
+            // All text data is stored in a single buffer; each textData instance has an offset into this buffer.
+            const char* text = textDrawList.m_textBuffer + textData.m_textBufferOffset;
+            
+            // Calculate the final text size in pixels to apply alignment flags correctly.
+            ImGui::SetWindowFontScale(textData.m_positionSize.w); // NB no CalcTextSize API which takes a font/size directly...
+            ImVec2 textSize = ImGui::CalcTextSize(text, text + textData.m_textLength);
+            ImGui::SetWindowFontScale(1.0f);
+            
+            // Generate a pixel offset based on text flags.
+            float2 textOffset = float2(-textSize.x * 0.5f, -textSize.y * 0.5f); // default to center
+            if ((textData.m_flags & Im3d::TextFlags_AlignLeft) != 0)
+            {
+                textOffset.x = -textSize.x;
+            }
+            else if ((textData.m_flags & Im3d::TextFlags_AlignRight) != 0)
+            {
+                textOffset.x = 0.0f;
+            }
+            
+            if ((textData.m_flags & Im3d::TextFlags_AlignTop) != 0)
+            {
+                textOffset.y = -textSize.y;
+            }
+            else if ((textData.m_flags & Im3d::TextFlags_AlignBottom) != 0)
+            {
+                textOffset.y = 0.0f;
+            }
+            
+            // Add text to the window draw list.
+            screen = screen + textOffset;
+            imDrawList->AddText(nullptr, textData.m_positionSize.w * ImGui::GetFontSize(), ImVec2(screen.x, screen.y), textData.m_color.getABGR(), text, text + textData.m_textLength);
+        }
+    }
+    
+    ImGui::End();
+    ImGui::PopStyleColor(1);
 }
